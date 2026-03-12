@@ -4,3 +4,4 @@ torch
 Pillow
 plotly
 pandas
+opencv-python
