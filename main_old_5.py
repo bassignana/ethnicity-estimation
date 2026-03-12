@@ -1,3 +1,11 @@
+"""
+Run with:
+    pip install streamlit-webrtc opencv-python-headless av transformers torch plotly
+
+streamlit-webrtc streams the browser webcam to the Python backend in real time,
+so cv2 face annotation works live on the actual user's camera feed.
+"""
+
 import streamlit as st
 from PIL import Image
 from transformers import pipeline
@@ -5,6 +13,8 @@ import torch
 import plotly.graph_objects as go
 import cv2
 import numpy as np
+import av
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 
 st.set_page_config(layout="wide")
 
@@ -85,43 +95,41 @@ def load_face_cascade():
 classifier   = load_classifier()
 face_cascade = load_face_cascade()
 
-# ── cv2 face annotation ───────────────────────────────────────────────────────
-def draw_face_annotations(pil_image: Image.Image):
-    img_bgr = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    gray    = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    gray    = cv2.equalizeHist(gray)
-
+# ── cv2 annotation (shared by live preview + still capture) ──────────────────
+def annotate_frame(img_bgr: np.ndarray) -> tuple[np.ndarray, bool]:
+    gray  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    gray  = cv2.equalizeHist(gray)
     faces = face_cascade.detectMultiScale(
         gray, scaleFactor=1.1, minNeighbors=5,
         minSize=(60, 60), flags=cv2.CASCADE_SCALE_IMAGE,
     )
 
-    NEON  = (255, 225, 0)   # cyan in BGR
+    NEON  = (255, 225, 0)
     WHITE = (255, 255, 255)
-    BLACK = (0, 0, 0)
+    BLACK = (0,   0,   0)
 
     for (x, y, w, h) in faces:
         # semi-transparent fill
-        overlay = img_bgr.copy()
-        cv2.rectangle(overlay, (x, y), (x+w, y+h), NEON, -1)
-        cv2.addWeighted(overlay, 0.10, img_bgr, 0.90, 0, img_bgr)
+        ov = img_bgr.copy()
+        cv2.rectangle(ov, (x, y), (x+w, y+h), NEON, -1)
+        cv2.addWeighted(ov, 0.10, img_bgr, 0.90, 0, img_bgr)
 
         # dashed border
         def dashed_rect(img, x, y, w, h, color, thickness=2, dash=16, gap=8):
             for (x1,y1),(x2,y2) in [
-                ((x,y),(x+w,y)), ((x+w,y),(x+w,y+h)),
-                ((x+w,y+h),(x,y+h)), ((x,y+h),(x,y))
+                ((x,y),(x+w,y)),((x+w,y),(x+w,y+h)),
+                ((x+w,y+h),(x,y+h)),((x,y+h),(x,y))
             ]:
                 dist = int(np.hypot(x2-x1, y2-y1))
                 if dist == 0: continue
-                dx, dy = (x2-x1)/dist, (y2-y1)/dist
+                dx2, dy2 = (x2-x1)/dist, (y2-y1)/dist
                 pos, on = 0, True
                 while pos < dist:
-                    seg = min(pos + (dash if on else gap), dist)
+                    seg = min(pos+(dash if on else gap), dist)
                     if on:
                         cv2.line(img,
-                                 (int(x1+dx*pos), int(y1+dy*pos)),
-                                 (int(x1+dx*seg), int(y1+dy*seg)),
+                                 (int(x1+dx2*pos), int(y1+dy2*pos)),
+                                 (int(x1+dx2*seg), int(y1+dy2*seg)),
                                  color, thickness, cv2.LINE_AA)
                     pos += dash if on else gap
                     on = not on
@@ -130,54 +138,82 @@ def draw_face_annotations(pil_image: Image.Image):
 
         # corner brackets
         arm = max(20, w // 7)
-        for (cx, cy), (sx, sy) in [
-            ((x,   y  ),( 1, 1)), ((x+w, y  ),(-1, 1)),
-            ((x,   y+h),( 1,-1)), ((x+w, y+h),(-1,-1)),
+        for (cx,cy),(sx,sy) in [
+            ((x,   y  ),( 1, 1)),((x+w, y  ),(-1, 1)),
+            ((x,   y+h),( 1,-1)),((x+w, y+h),(-1,-1)),
         ]:
-            cv2.line(img_bgr, (cx, cy), (cx+sx*arm, cy),     WHITE, 3, cv2.LINE_AA)
-            cv2.line(img_bgr, (cx, cy), (cx, cy+sy*arm),     WHITE, 3, cv2.LINE_AA)
-            cv2.circle(img_bgr, (cx, cy), 5, NEON, -1, cv2.LINE_AA)
+            cv2.line(img_bgr,(cx,cy),(cx+sx*arm,cy),    WHITE,3,cv2.LINE_AA)
+            cv2.line(img_bgr,(cx,cy),(cx,cy+sy*arm),    WHITE,3,cv2.LINE_AA)
+            cv2.circle(img_bgr,(cx,cy),5,NEON,-1,cv2.LINE_AA)
 
         # label banner
-        banner_h = 28
-        by = max(0, y - banner_h)
-        cv2.rectangle(img_bgr, (x, by), (x+w, y), NEON, -1)
-        label = "FACE DETECTED"
-        font, fscale, fthick = cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1
-        (tw, th), _ = cv2.getTextSize(label, font, fscale, fthick)
-        cv2.putText(img_bgr, label,
-                    (x + (w-tw)//2, by + (banner_h+th)//2),
-                    font, fscale, BLACK, fthick, cv2.LINE_AA)
+        bh = 28
+        by = max(0, y-bh)
+        cv2.rectangle(img_bgr,(x,by),(x+w,y),NEON,-1)
+        txt = "FACE DETECTED"
+        font, fs, ft = cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1
+        (tw,th),_ = cv2.getTextSize(txt,font,fs,ft)
+        cv2.putText(img_bgr, txt,
+                    (x+(w-tw)//2, by+(bh+th)//2),
+                    font, fs, BLACK, ft, cv2.LINE_AA)
 
-    annotated = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(annotated), len(faces) > 0
+    return img_bgr, len(faces) > 0
 
-# ── CSS: make camera widget fill width ───────────────────────────────────────
+
+# ── WebRTC video processor ────────────────────────────────────────────────────
+class FaceAnnotator(VideoProcessorBase):
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img_bgr = frame.to_ndarray(format="bgr24")
+        annotated, _ = annotate_frame(img_bgr)
+        return av.VideoFrame.from_ndarray(annotated, format="bgr24")
+
+
+# ── RTC config (public STUN — works on most networks) ────────────────────────
+RTC_CONFIG = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+
+# ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 [data-testid="stCameraInput"] { width: 100%; }
 [data-testid="stCameraInput"] > div { width: 100%; }
 [data-testid="stCameraInput"] video,
-[data-testid="stCameraInput"] img   { width: 100% !important; border-radius: 10px; }
+[data-testid="stCameraInput"] img { width: 100% !important; border-radius: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_cam, tab_upload = st.tabs(["Webcam", "Upload"])
+tab_cam, tab_upload = st.tabs(["📷 Webcam", "🖼️ Upload"])
 img_input = None
 cam_photo = None
 
 with tab_cam:
+    st.markdown("#### 🔴 Live preview with face detection")
+    st.caption("The live feed below shows real-time face detection. "
+               "Use the camera capture below to take a still for analysis.")
+
+    # ── Live annotated feed via streamlit-webrtc ──────────────────────────────
+    webrtc_streamer(
+        key="face-live",
+        video_processor_factory=FaceAnnotator,
+        rtc_configuration=RTC_CONFIG,
+        media_stream_constraints={"video": True, "audio": False},
+        async_processing=True,
+    )
+
+    st.markdown("---")
+    st.markdown("#### 📸 Capture for analysis")
     cam_photo = st.camera_input("", label_visibility="collapsed")
 
     if cam_photo:
         raw_pil = Image.open(cam_photo).convert("RGB")
-        annotated_pil, face_found = draw_face_annotations(raw_pil)
+        img_bgr = cv2.cvtColor(np.array(raw_pil), cv2.COLOR_RGB2BGR)
+        annotated_bgr, face_found = annotate_frame(img_bgr)
+        annotated_pil = Image.fromarray(cv2.cvtColor(annotated_bgr, cv2.COLOR_BGR2RGB))
 
         if face_found:
-            st.success("Face detected — running ethnicity analysis…")
+            st.success("✅ Face detected — running ethnicity analysis…")
         else:
-            st.warning("No face detected — try better lighting or move closer")
+            st.warning("⚠️ No face detected — try better lighting or move closer")
 
         st.image(annotated_pil, use_container_width=True)
         img_input = cam_photo
@@ -219,9 +255,7 @@ if img_input:
                 unsafe_allow_html=True,
             )
 
-    # ── Choropleth map ────────────────────────────────────────────────────────
     fig = go.Figure()
-
     for r in results:
         matched = match_label(r["label"])
         if not matched:
@@ -233,9 +267,7 @@ if img_input:
         fig.add_trace(go.Choropleth(
             locations=info["countries"],
             z=[score] * len(info["countries"]),
-            zmin=0,
-            zmax=100,
-            # Low end = visible tint (0.25 alpha), high end = full color
+            zmin=0, zmax=100,
             colorscale=[[0, hex_to_rgba(info["color"], 0.25)], [1, info["color"]]],
             showscale=False,
             name=label_display,
@@ -255,6 +287,5 @@ if img_input:
         ),
         height=440,
     )
-
     with col2:
         st.plotly_chart(fig, use_container_width=True)
