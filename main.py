@@ -8,7 +8,6 @@ import numpy as np
 
 st.set_page_config(layout="wide")
 
-# ── Ethnicity map ─────────────────────────────────────────────────────────────
 ETHNICITY_MAP = {
     "European": {
         "color": "#4A90D9",
@@ -85,7 +84,6 @@ def load_face_cascade():
 classifier   = load_classifier()
 face_cascade = load_face_cascade()
 
-# ── cv2 face annotation ───────────────────────────────────────────────────────
 def draw_face_annotations(pil_image: Image.Image):
     img_bgr = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
     gray    = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
@@ -162,15 +160,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_cam, tab_upload = st.tabs(["Webcam", "Upload"])
-img_input = None
-cam_photo = None
+cam_photo = st.camera_input("", label_visibility="collapsed")
 
-with tab_cam:
-    cam_photo = st.camera_input("", label_visibility="collapsed")
-
-    if cam_photo:
+if cam_photo:
+    col1, col2 = st.columns([1, 1])
+    with col1:
         raw_pil = Image.open(cam_photo).convert("RGB")
         annotated_pil, face_found = draw_face_annotations(raw_pil)
 
@@ -182,23 +176,16 @@ with tab_cam:
         st.image(annotated_pil, use_container_width=True)
         img_input = cam_photo
 
-with tab_upload:
-    uploaded = st.file_uploader("", type=["jpg","jpeg","png"], label_visibility="collapsed")
-    if uploaded:
-        img_input = uploaded
+        if img_input:
+            image = Image.open(img_input).convert("RGB")
 
-# ── Analysis ─────────────────────────────────────────────────────────────────
-if img_input:
-    image = Image.open(img_input).convert("RGB")
-    col1, col2 = st.columns([1, 2])
-
-    with col1:
         if img_input is not cam_photo:
-            st.image(image, use_container_width=True)
+            st.image(image)
 
         with st.spinner("Analysing…"):
             results = classifier(image, top_k=10)
 
+    with col2:
         st.markdown("### Results")
         for r in results:
             label   = r["label"].replace("_"," ").title()
@@ -219,42 +206,40 @@ if img_input:
                 unsafe_allow_html=True,
             )
 
-    # ── Choropleth map ────────────────────────────────────────────────────────
-    fig = go.Figure()
+        fig = go.Figure()
 
-    for r in results:
-        matched = match_label(r["label"])
-        if not matched:
-            continue
-        score         = r["score"] * 100
-        info          = ETHNICITY_MAP[matched]
-        label_display = r["label"].replace("_"," ").title()
+        for r in results:
+            matched = match_label(r["label"])
+            if not matched:
+                continue
+            score         = r["score"] * 100
+            info          = ETHNICITY_MAP[matched]
+            label_display = r["label"].replace("_"," ").title()
 
-        fig.add_trace(go.Choropleth(
-            locations=info["countries"],
-            z=[score] * len(info["countries"]),
-            zmin=0,
-            zmax=100,
-            # Low end = visible tint (0.25 alpha), high end = full color
-            colorscale=[[0, hex_to_rgba(info["color"], 0.25)], [1, info["color"]]],
-            showscale=False,
-            name=label_display,
-            hovertemplate=f"<b>%{{location}}</b><br>{label_display}: {score:.1f}%<extra></extra>",
-            marker_line_color="#cccccc",
-            marker_line_width=0.5,
-        ))
+            fig.add_trace(go.Choropleth(
+                locations=info["countries"],
+                z=[score] * len(info["countries"]),
+                zmin=0,
+                zmax=100,
+                # Low end = visible tint (0.25 alpha), high end = full color
+                colorscale=[[0, hex_to_rgba(info["color"], 0.25)], [1, info["color"]]],
+                showscale=False,
+                name=label_display,
+                hovertemplate=f"<b>%{{location}}</b><br>{label_display}: {score:.1f}%<extra></extra>",
+                marker_line_color="#cccccc",
+                marker_line_width=0.5,
+            ))
 
-    fig.update_layout(
-        margin=dict(l=0, r=0, t=0, b=0),
-        paper_bgcolor="white",
-        geo=dict(
-            bgcolor="white", showframe=False, showcoastlines=False,
-            showland=True, landcolor="#eeeeee",
-            showocean=True, oceancolor="#ddeeff",
-            showcountries=True, countrycolor="#cccccc", showlakes=False,
-        ),
-        height=440,
-    )
+        fig.update_layout(
+            margin=dict(l=0, r=0, t=0, b=0),
+            paper_bgcolor="white",
+            geo=dict(
+                bgcolor="white", showframe=False, showcoastlines=False,
+                showland=True, landcolor="#eeeeee",
+                showocean=True, oceancolor="#ddeeff",
+                showcountries=True, countrycolor="#cccccc", showlakes=False,
+            ),
+            height=440,
+        )
 
-    with col2:
         st.plotly_chart(fig, use_container_width=True)
