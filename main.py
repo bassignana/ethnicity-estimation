@@ -6,9 +6,150 @@ import plotly.graph_objects as go
 import cv2
 import numpy as np
 import io
+import time
 
-st.set_page_config(layout="wide")
+st.set_page_config(layout="wide", page_title="Analisi Etnica", page_icon="🔬")
 
+# ── Injected CSS ───────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;600;700&display=swap');
+
+html, body, [class*="css"] {
+    font-family: 'Rajdhani', sans-serif;
+    background-color: #0a0e1a;
+    color: #e0e8ff;
+}
+
+/* ── Page background */
+.stApp {
+    background: radial-gradient(ellipse at 20% 0%, #0d1b3e 0%, #0a0e1a 60%);
+    min-height: 100vh;
+}
+
+/* ── Hide default Streamlit chrome */
+#MainMenu, footer, header { visibility: hidden; }
+.block-container { padding-top: 2rem; padding-bottom: 2rem; max-width: 1100px; }
+
+/* ── Phase stepper */
+.phase-stepper {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin: 0 auto 2.5rem auto;
+    max-width: 640px;
+    font-family: 'Share Tech Mono', monospace;
+}
+.phase-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+}
+.phase-dot {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    border: 2px solid #2a3a6a;
+    background: #10182e;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; color: #3a5a9a;
+    transition: all .4s ease;
+    position: relative;
+    z-index: 2;
+}
+.phase-dot.active {
+    border-color: #00e5ff;
+    background: linear-gradient(135deg, #001f3f, #003366);
+    color: #00e5ff;
+    box-shadow: 0 0 16px #00e5ff66, 0 0 4px #00e5ff;
+}
+.phase-dot.done {
+    border-color: #00ff9d;
+    background: linear-gradient(135deg, #001a10, #003322);
+    color: #00ff9d;
+    box-shadow: 0 0 10px #00ff9d44;
+}
+.phase-label {
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: #3a5a9a;
+}
+.phase-label.active { color: #00e5ff; }
+.phase-label.done   { color: #00ff9d; }
+.phase-connector {
+    flex: 1;
+    height: 2px;
+    margin-bottom: 22px;
+    background: #2a3a6a;
+}
+.phase-connector.done { background: linear-gradient(90deg, #00ff9d, #00e5ff); }
+
+/* ── Section card */
+.phase-card {
+    background: linear-gradient(145deg, #111a32, #0d1424);
+    border: 1px solid #1e2e50;
+    border-radius: 16px;
+    padding: 2rem 2.5rem;
+    margin-bottom: 1.5rem;
+    box-shadow: 0 4px 40px #00000066;
+}
+.phase-card h2 {
+    font-family: 'Share Tech Mono', monospace;
+    color: #00e5ff;
+    font-size: 1rem;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid #1e2e50;
+    padding-bottom: .75rem;
+}
+
+/* ── Camera widget override */
+[data-testid="stCameraInput"] > div {
+    border: 1px solid #1e2e50 !important;
+    border-radius: 12px !important;
+    overflow: hidden;
+    background: #0a0e1a !important;
+}
+
+/* ── Buttons */
+.stButton > button {
+    background: linear-gradient(135deg, #003366, #001f3f);
+    border: 1px solid #00e5ff;
+    color: #00e5ff;
+    font-family: 'Share Tech Mono', monospace;
+    letter-spacing: 2px;
+    font-size: 0.85rem;
+    padding: .65rem 2rem;
+    border-radius: 6px;
+    transition: all .3s;
+}
+.stButton > button:hover {
+    background: #00e5ff;
+    color: #0a0e1a;
+    box-shadow: 0 0 20px #00e5ff66;
+}
+
+/* ── Info / warning / success banners */
+.stAlert {
+    border-radius: 8px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: .85rem;
+    letter-spacing: 1px;
+}
+
+/* ── Results bar overrides */
+.result-row {
+    margin-bottom: 8px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+
+# ── Data ───────────────────────────────────────────────────────────────────────
 ETHNICITY_MAP = {
     "Europeo": {
         "color": "#4A90D9",
@@ -73,6 +214,7 @@ def hex_to_rgba(hex_color: str, alpha: float) -> str:
     r, g, b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
     return f"rgba({r},{g},{b},{alpha})"
 
+# ── Models ─────────────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_classifier():
     return pipeline(
@@ -90,32 +232,27 @@ def load_face_cascade():
 classifier   = load_classifier()
 face_cascade = load_face_cascade()
 
+# ── CV helpers ─────────────────────────────────────────────────────────────────
 def draw_base_frame(img_bgr, faces, scan_x_offset=None):
-    """Draw face box + optional scan bar onto img_bgr (in-place copy). Returns annotated BGR image."""
     out = img_bgr.copy()
-    NEON  = (0, 225, 255)   # BGR
+    NEON  = (0, 225, 255)
     WHITE = (255, 255, 255)
     BLACK = (0, 0, 0)
 
     for (x, y, w, h) in faces:
-        # Semi-transparent fill
         overlay = out.copy()
         cv2.rectangle(overlay, (x, y), (x+w, y+h), NEON, -1)
         cv2.addWeighted(overlay, 0.08, out, 0.92, 0, out)
 
-        # ── Scanning bar ──────────────────────────────────────────────────
         if scan_x_offset is not None:
-            bx = x + scan_x_offset
+            bx    = x + scan_x_offset
             bar_w = max(6, w // 10)
-            # clamp to box
-            bx = max(x, min(bx, x + w - bar_w))
+            bx    = max(x, min(bx, x + w - bar_w))
             bar_overlay = out.copy()
             cv2.rectangle(bar_overlay, (bx, y+2), (bx + bar_w, y+h-2), NEON, -1)
             cv2.addWeighted(bar_overlay, 0.55, out, 0.45, 0, out)
-            # bright leading edge
             cv2.line(out, (bx + bar_w, y+2), (bx + bar_w, y+h-2), WHITE, 2, cv2.LINE_AA)
 
-        # ── Dashed border ─────────────────────────────────────────────────
         def dashed_rect(img, x, y, w, h, color, thickness=2, dash=16, gap=8):
             for (x1,y1),(x2,y2) in [
                 ((x,y),(x+w,y)), ((x+w,y),(x+w,y+h)),
@@ -137,7 +274,6 @@ def draw_base_frame(img_bgr, faces, scan_x_offset=None):
 
         dashed_rect(out, x, y, w, h, NEON, thickness=2)
 
-        # ── Corner brackets ───────────────────────────────────────────────
         arm = max(20, w // 7)
         for (cx, cy), (sx, sy) in [
             ((x,   y  ),( 1, 1)), ((x+w, y  ),(-1, 1)),
@@ -147,11 +283,10 @@ def draw_base_frame(img_bgr, faces, scan_x_offset=None):
             cv2.line(out, (cx, cy), (cx, cy+sy*arm),  WHITE, 3, cv2.LINE_AA)
             cv2.circle(out, (cx, cy), 5, NEON, -1, cv2.LINE_AA)
 
-        # ── Label banner ──────────────────────────────────────────────────
         banner_h = 28
         by = max(0, y - banner_h)
         cv2.rectangle(out, (x, by), (x+w, y), NEON, -1)
-        label = ("ANALIZZO...") if scan_x_offset is not None else "Volto rilevato"
+        label = "ANALIZZO..." if scan_x_offset is not None else "Volto rilevato"
         font, fscale, fthick = cv2.FONT_HERSHEY_SIMPLEX, 0.52, 1
         (tw, th), _ = cv2.getTextSize(label, font, fscale, fthick)
         cv2.putText(out, label,
@@ -160,192 +295,314 @@ def draw_base_frame(img_bgr, faces, scan_x_offset=None):
 
     return out
 
-def create_scanning_gif(pil_image: Image.Image, faces) -> bytes:
-    """
-    Build an animated GIF: scanning bar sweeps left→right→left inside each face box.
-    Returns raw GIF bytes.
-    """
+def create_scanning_gif(pil_image, faces):
     img_bgr = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-
-    # Resize for speed if very large
     max_dim = 640
-    h0, w0 = img_bgr.shape[:2]
-    scale = min(1.0, max_dim / max(h0, w0))
+    h0, w0  = img_bgr.shape[:2]
+    scale   = min(1.0, max_dim / max(h0, w0))
     if scale < 1.0:
         img_bgr = cv2.resize(img_bgr, (int(w0*scale), int(h0*scale)))
-        faces = [(int(x*scale), int(y*scale), int(w*scale), int(h*scale)) for (x,y,w,h) in faces]
+        faces   = [(int(x*scale), int(y*scale), int(w*scale), int(h*scale)) for (x,y,w,h) in faces]
 
-    N_FRAMES  = 15          # frames per sweep direction
-    LOOP_REPS = 4           # number of full back-and-forth cycles
-    FRAME_DUR = 50          # ms per frame  (≈16 fps)
-
+    N_FRAMES  = 15
+    LOOP_REPS = 4
+    FRAME_DUR = 50
     pil_frames = []
 
     for _ in range(LOOP_REPS):
-        # left → right
         for i in range(N_FRAMES):
-            t = i / (N_FRAMES - 1)          # 0 → 1
-            frames_bgr = []
+            t = i / (N_FRAMES - 1)
             for (x, y, w, h) in faces:
                 offset = int(t * w)
-            annotated = draw_base_frame(img_bgr, faces, scan_x_offset=offset)
-            rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-            pil_frames.append(Image.fromarray(rgb))
-
-        # right → left
+            annotated  = draw_base_frame(img_bgr, faces, scan_x_offset=offset)
+            pil_frames.append(Image.fromarray(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)))
         for i in range(N_FRAMES):
             t = 1.0 - i / (N_FRAMES - 1)
-            frames_bgr = []
             for (x, y, w, h) in faces:
                 offset = int(t * w)
-            annotated = draw_base_frame(img_bgr, faces, scan_x_offset=offset)
-            rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-            pil_frames.append(Image.fromarray(rgb))
+            annotated  = draw_base_frame(img_bgr, faces, scan_x_offset=offset)
+            pil_frames.append(Image.fromarray(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)))
 
     buf = io.BytesIO()
-    pil_frames[0].save(
-        buf, format="GIF",
-        save_all=True, append_images=pil_frames[1:],
-        loop=0, duration=FRAME_DUR, optimize=False,
-    )
+    pil_frames[0].save(buf, format="GIF", save_all=True, append_images=pil_frames[1:],
+                       loop=0, duration=FRAME_DUR, optimize=False)
     return buf.getvalue()
 
-def draw_face_annotations(pil_image: Image.Image):
-    """Static version — detects at most ONE face."""
-    img_bgr = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
-    gray    = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    gray    = cv2.equalizeHist(gray)
-    all_faces = face_cascade.detectMultiScale(
-        gray, scaleFactor=1.1, minNeighbors=5,
-        minSize=(60, 60), flags=cv2.CASCADE_SCALE_IMAGE,
-    )
-    # Keep only the largest face by area
+def draw_face_annotations(pil_image):
+    img_bgr  = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    gray     = cv2.equalizeHist(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY))
+    all_faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5,
+                                              minSize=(60,60), flags=cv2.CASCADE_SCALE_IMAGE)
     faces = []
     if len(all_faces) > 0:
-        largest = max(all_faces, key=lambda f: f[2] * f[3])
-        faces = [largest]
-
+        faces = [max(all_faces, key=lambda f: f[2]*f[3])]
     annotated = draw_base_frame(img_bgr, faces, scan_x_offset=None)
-    rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(rgb), len(faces) > 0, faces
+    return Image.fromarray(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)), len(faces) > 0, faces
 
-left, center, right = st.columns([1,1,1])
 
-with center:
-    cam_photo = st.camera_input("main_camera_input", label_visibility="collapsed",
-                                width=600)
+# ── Helper: render the phase stepper ──────────────────────────────────────────
+def render_stepper(phase: str):
+    """phase: 'photo' | 'analysis' | 'results'"""
+    steps = [
+        ("01", "FOTO",     "photo"),
+        ("02", "ANALISI",  "analysis"),
+        ("03", "RISULTATI","results"),
+    ]
+    order = ["photo", "analysis", "results"]
+    current_idx = order.index(phase)
 
-# Reset state when a new photo is taken
-if cam_photo:
-    photo_id = hash(cam_photo.getvalue())
-    if st.session_state.get("photo_id") != photo_id:
-        st.session_state["photo_id"]  = photo_id
-        st.session_state["phase"]     = "scanning"   # scanning → done
-        st.session_state["results"]   = None
-        st.session_state["annotated"] = None
-        st.session_state["gif"]       = None
-        st.session_state["faces"]     = None
-        st.session_state["raw_pil"]   = None
+    html = '<div class="phase-stepper">'
+    for i, (num, lbl, key) in enumerate(steps):
+        idx = order.index(key)
+        if idx < current_idx:
+            dot_cls = "phase-dot done"
+            lbl_cls = "phase-label done"
+            icon    = "✓"
+        elif idx == current_idx:
+            dot_cls = "phase-dot active"
+            lbl_cls = "phase-label active"
+            icon    = num
+        else:
+            dot_cls = "phase-dot"
+            lbl_cls = "phase-label"
+            icon    = num
 
-if cam_photo and st.session_state.get("phase"):
-    phase = st.session_state["phase"]
+        html += f'<div class="phase-step"><div class="{dot_cls}">{icon}</div><span class="{lbl_cls}">{lbl}</span></div>'
 
-    # ── Pre-compute once ──────────────────────────────────────────────────
-    if st.session_state["raw_pil"] is None:
+        if i < len(steps) - 1:
+            conn_cls = "phase-connector done" if current_idx > idx else "phase-connector"
+            html += f'<div class="{conn_cls}"></div>'
+
+    html += '</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def card(title: str):
+    st.markdown(f'<div class="phase-card"><h2>{title}</h2>', unsafe_allow_html=True)
+
+def card_end():
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Session-state bootstrap
+# ══════════════════════════════════════════════════════════════════════════════
+if "phase" not in st.session_state:
+    st.session_state["phase"] = "photo"
+
+# ── Page title ─────────────────────────────────────────────────────────────────
+# st.markdown("""
+# <div style="text-align:center; margin-bottom:2rem;">
+#   <div style="font-family:'Share Tech Mono',monospace; font-size:.75rem;
+#               letter-spacing:6px; color:#3a6a9a; margin-bottom:.4rem;">
+#     SISTEMA DI ANALISI BIOMETRICA
+#   </div>
+#   <div style="font-family:'Rajdhani',sans-serif; font-weight:700;
+#               font-size:2rem; color:#e0e8ff; letter-spacing:4px;">
+#     RICONOSCIMENTO DELL'ETNIA
+#   </div>
+# </div>
+# """, unsafe_allow_html=True)
+
+st.markdown("""
+<div style="text-align:center; margin-bottom:2rem;">
+  <div style="font-family:'Rajdhani',sans-serif; font-weight:700;
+              font-size:2rem; color:#e0e8ff; letter-spacing:4px;">
+    RICONOSCIMENTO DELL'ETNIA
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
+phase = st.session_state["phase"]
+render_stepper(phase)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PHASE 1 — PHOTO
+# ══════════════════════════════════════════════════════════════════════════════
+if phase == "photo":
+    # card("ACQUISISCI IMMAGINE")
+    _, cam_col, _ = st.columns([1, 2, 1])
+    with cam_col:
+        cam_photo = st.camera_input("Scatta una foto", label_visibility="collapsed")
+        st.markdown("""
+        <div style="text-align:center; margin-top:.75rem;
+                    font-family:'Share Tech Mono',monospace; font-size:.7rem;
+                    color:#3a6a9a; letter-spacing:2px;">
+            POSIZIONA IL VOLTO AL CENTRO • BUONA ILLUMINAZIONE
+        </div>
+        """, unsafe_allow_html=True)
+    card_end()
+
+    if cam_photo:
+        photo_id = hash(cam_photo.getvalue())
+        if st.session_state.get("photo_id") != photo_id:
+            st.session_state["photo_id"]   = photo_id
+            st.session_state["results"]    = None
+            st.session_state["annotated"]  = None
+            st.session_state["gif"]        = None
+            st.session_state["faces"]      = None
+            st.session_state["raw_pil"]    = None
+            st.session_state["face_found"] = None
+
         raw_pil = Image.open(cam_photo).convert("RGB")
         annotated_pil, face_found, faces = draw_face_annotations(raw_pil)
-        st.session_state["raw_pil"]   = raw_pil
-        st.session_state["annotated"] = annotated_pil
+        st.session_state["raw_pil"]    = raw_pil
+        st.session_state["annotated"]  = annotated_pil
         st.session_state["face_found"] = face_found
-        st.session_state["faces"]     = faces[:1]  # enforce single face
+        st.session_state["faces"]      = faces[:1]
 
-    raw_pil       = st.session_state["raw_pil"]
-    annotated_pil = st.session_state["annotated"]
-    face_found    = st.session_state["face_found"]
-    faces         = st.session_state["faces"]
+        _, btn_col, _ = st.columns([1, 2, 1])
+        with btn_col:
+            if face_found:
+                st.success("✔  Volto rilevato — pronto per l'analisi")
+                if st.button("▶  AVVIA ANALISI", use_container_width=True):
+                    st.session_state["phase"] = "analysis"
+                    st.rerun()
+            else:
+                st.warning("⚠  Nessun volto rilevato — riprova con una luce migliore")
 
-    col1, col2 = st.columns([1, 1])
 
-    with col1:
-        if not face_found:
-            st.warning("Nessun volto rilevato — prova con una luce migliore o avvicinati alla fotocamera.")
-            st.image(annotated_pil, use_container_width=True)
+# ══════════════════════════════════════════════════════════════════════════════
+#  PHASE 2 — ANALYSIS
+# ══════════════════════════════════════════════════════════════════════════════
+elif phase == "analysis":
+    card("ANALISI IN CORSO")
+    img_col, status_col = st.columns([1, 1])
 
-        elif phase == "scanning":
-            st.info("Volto rilevato — analisi in corso…")
+    raw_pil    = st.session_state["raw_pil"]
+    faces      = st.session_state["faces"]
+    face_found = st.session_state["face_found"]
 
-            # Build GIF once
-            if st.session_state["gif"] is None:
-                st.session_state["gif"] = create_scanning_gif(raw_pil, faces)
-
+    with img_col:
+        if st.session_state.get("gif") is None and face_found:
+            st.session_state["gif"] = create_scanning_gif(raw_pil, faces)
+        if face_found:
             st.image(st.session_state["gif"], use_container_width=True)
+        else:
+            st.image(st.session_state["annotated"], use_container_width=True)
 
-            # Run classifier
-            with st.spinner("Analisi in corso…"):
-                results = classifier(raw_pil, top_k=10)
-            st.session_state["results"] = results
-            st.session_state["phase"]   = "done"
+    with status_col:
+        st.markdown("""
+        <div style="font-family:'Share Tech Mono',monospace; font-size:.8rem;
+                    color:#00e5ff; letter-spacing:2px; margin-bottom:1.5rem;">
+            ELABORAZIONE PARAMETRI BIOMETRICI...
+        </div>
+        """, unsafe_allow_html=True)
 
-            # Wait 3 seconds showing the GIF, then rerun to flip to results
-            import time
-            time.sleep(9)
-            st.rerun()
+        progress_bar = st.progress(0, text="Inizializzazione…")
+        status_text  = st.empty()
 
-        else:  # phase == "done"
-            st.success("Analisi completata!")
-            st.image(annotated_pil, use_container_width=True)
+        steps_labels = [
+            (15,  "Rilevamento geometria facciale…"),
+            (35,  "Estrazione feature cromatiche…"),
+            (55,  "Analisi morfologica strutturale…"),
+            (75,  "Classificazione modello ML…"),
+            (90,  "Calcolo appartenenza etnica…"),
+            (100, "Completato."),
+        ]
 
-    with col2:
-        if face_found and st.session_state.get("results"):
-            results = st.session_state["results"]
-            st.subheader("Risultati")
-            for r in results:
-                label   = r["label"].replace("_"," ").title()
-                score   = r["score"] * 100
-                matched = match_label(r["label"])
-                color   = ETHNICITY_MAP[matched]["color"] if matched else "#888888"
-                bar_w   = int(score * 1.8)
-                st.markdown(
-                    f'<div style="display:flex;align-items:center;margin-bottom:6px;gap:8px;">'
-                    f'<span style="width:12px;height:12px;border-radius:50%;background:{color};'
-                    f'display:inline-block;flex-shrink:0;"></span>'
-                    f'<span style="width:140px;font-size:13px;"><b>{label}</b></span>'
-                    f'<div style="background:#eee;border-radius:4px;height:10px;width:180px;">'
-                    f'<div style="background:{color};width:{bar_w}px;height:10px;border-radius:4px;"></div>'
-                    f'</div>'
-                    f'<span style="font-size:12px;color:#555;">{score:.1f}%</span>'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
+        # Run the actual classifier
+        with st.spinner(""):
+            results = classifier(raw_pil, top_k=10)
 
-            fig = go.Figure()
-            for r in results:
-                matched = match_label(r["label"])
-                if not matched:
-                    continue
-                score         = r["score"] * 100
-                info          = ETHNICITY_MAP[matched]
-                label_display = matched  # Use Italian group name directly
-                fig.add_trace(go.Choropleth(
-                    locations=info["countries"],
-                    z=[score] * len(info["countries"]),
-                    zmin=0, zmax=100,
-                    colorscale=[[0, hex_to_rgba(info["color"], 0.25)], [1, info["color"]]],
-                    showscale=False,
-                    name=label_display,
-                    hovertemplate=f"<b>%{{location}}</b><br>{label_display}: {score:.1f}%<extra></extra>",
-                    marker_line_color="#cccccc",
-                    marker_line_width=0.5,
-                ))
-            fig.update_layout(
-                margin=dict(l=0, r=0, t=0, b=0),
-                paper_bgcolor="white",
-                geo=dict(
-                    bgcolor="white", showframe=False, showcoastlines=False,
-                    showland=True, landcolor="#eeeeee",
-                    showocean=True, oceancolor="#ddeeff",
-                    showcountries=True, countrycolor="#cccccc", showlakes=False,
-                ),
-                height=440,
+        # Animate the progress bar after classification
+        for pct, label in steps_labels:
+            progress_bar.progress(pct, text=label)
+            status_text.markdown(
+                f'<span style="font-family:\'Share Tech Mono\',monospace; '
+                f'font-size:.7rem; color:#3a9a6a; letter-spacing:1px;">{label}</span>',
+                unsafe_allow_html=True,
             )
-            st.plotly_chart(fig, use_container_width=True)
+            time.sleep(0.4)
+
+        st.session_state["results"] = results
+        st.session_state["phase"]   = "results"
+
+    card_end()
+    st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PHASE 3 — RESULTS
+# ══════════════════════════════════════════════════════════════════════════════
+elif phase == "results":
+    results      = st.session_state["results"]
+    annotated_pil = st.session_state["annotated"]
+
+    card("RISULTATI ANALISI")
+
+    img_col, bar_col = st.columns([1, 1])
+
+    with img_col:
+        st.markdown('<div style="font-family:\'Share Tech Mono\',monospace; font-size:.7rem; color:#3a6a9a; letter-spacing:2px; margin-bottom:.5rem;">IMMAGINE ANALIZZATA</div>', unsafe_allow_html=True)
+        st.image(annotated_pil, use_container_width=True)
+
+    with bar_col:
+        st.markdown('<div style="font-family:\'Share Tech Mono\',monospace; font-size:.7rem; color:#3a6a9a; letter-spacing:2px; margin-bottom:.75rem;">DISTRIBUZIONE ETNICHE</div>', unsafe_allow_html=True)
+        for r in results:
+            label   = r["label"].replace("_"," ").title()
+            score   = r["score"] * 100
+            matched = match_label(r["label"])
+            color   = ETHNICITY_MAP[matched]["color"] if matched else "#445577"
+            bar_w   = int(score * 1.8)
+            st.markdown(
+                f'<div class="result-row" style="display:flex;align-items:center;gap:8px;">'
+                f'<span style="width:10px;height:10px;border-radius:50%;background:{color};'
+                f'display:inline-block;flex-shrink:0;box-shadow:0 0 6px {color};"></span>'
+                f'<span style="width:145px;font-size:13px;font-family:\'Rajdhani\',sans-serif;'
+                f'font-weight:600;color:#c0cce8;">{label}</span>'
+                f'<div style="background:#1a243a;border-radius:4px;height:8px;width:180px;border:1px solid #2a3a5a;">'
+                f'<div style="background:{color};width:{bar_w}px;height:8px;border-radius:4px;'
+                f'box-shadow:0 0 8px {color}66;"></div></div>'
+                f'<span style="font-size:12px;color:#5a7aa0;font-family:\'Share Tech Mono\',monospace;">'
+                f'{score:.1f}%</span>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    card_end()
+
+    # ── World map ──────────────────────────────────────────────────────────────
+    card("DISTRIBUZIONE GEOGRAFICA ETNIA")
+    fig = go.Figure()
+    for r in results:
+        matched = match_label(r["label"])
+        if not matched:
+            continue
+        score = r["score"] * 100
+        info  = ETHNICITY_MAP[matched]
+        fig.add_trace(go.Choropleth(
+            locations=info["countries"],
+            z=[score] * len(info["countries"]),
+            zmin=0, zmax=100,
+            colorscale=[[0, hex_to_rgba(info["color"], 0.15)], [1, info["color"]]],
+            showscale=False,
+            name=matched,
+            hovertemplate=f"<b>%{{location}}</b><br>{matched}: {score:.1f}%<extra></extra>",
+            marker_line_color="#1a2a4a",
+            marker_line_width=0.5,
+        ))
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=0, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        geo=dict(
+            bgcolor="#0a0e1a",
+            showframe=False, showcoastlines=False,
+            showland=True,  landcolor="#111a32",
+            showocean=True, oceancolor="#0a0e1a",
+            showcountries=True, countrycolor="#1e2e50", showlakes=False,
+        ),
+        height=420,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    card_end()
+
+    # ── Reset button ───────────────────────────────────────────────────────────
+    _, btn_col, _ = st.columns([2, 1, 2])
+    with btn_col:
+        if st.button("↩  NUOVA ANALISI", use_container_width=True):
+            for k in ["phase","photo_id","results","annotated","gif","faces","raw_pil","face_found"]:
+                st.session_state.pop(k, None)
+            st.session_state["phase"] = "photo"
+            st.rerun()
