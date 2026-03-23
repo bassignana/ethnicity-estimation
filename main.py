@@ -8,9 +8,9 @@ import numpy as np
 import io
 import time
 
-st.set_page_config(layout="wide", page_title="Analisi Etnica", page_icon="🔬")
+st.set_page_config(layout="wide", page_title="Analisi Etnia", page_icon="🔬")
 
-# ── Injected CSS ───────────────────────────────────────────────────────────────
+#  CSS
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;400;600;700&display=swap');
@@ -149,7 +149,7 @@ html, body, [class*="css"] {
 """, unsafe_allow_html=True)
 
 
-# ── Data ───────────────────────────────────────────────────────────────────────
+# Data
 ETHNICITY_MAP = {
     "Europeo": {
         "color": "#4A90D9",
@@ -214,7 +214,7 @@ def hex_to_rgba(hex_color: str, alpha: float) -> str:
     r, g, b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
     return f"rgba({r},{g},{b},{alpha})"
 
-# ── Models ─────────────────────────────────────────────────────────────────────
+# Models
 @st.cache_resource
 def load_classifier():
     return pipeline(
@@ -232,7 +232,7 @@ def load_face_cascade():
 classifier   = load_classifier()
 face_cascade = load_face_cascade()
 
-# ── CV helpers ─────────────────────────────────────────────────────────────────
+# CV helpers
 def draw_base_frame(img_bgr, faces, scan_x_offset=None):
     out = img_bgr.copy()
     NEON  = (0, 225, 255)
@@ -342,7 +342,6 @@ def draw_face_annotations(pil_image):
 
 # ── Helper: render the phase stepper ──────────────────────────────────────────
 def render_stepper(phase: str):
-    """phase: 'photo' | 'analysis' | 'results'"""
     steps = [
         ("01", "FOTO",     "photo"),
         ("02", "ANALISI",  "analysis"),
@@ -384,9 +383,6 @@ def card_end():
     st.markdown('</div>', unsafe_allow_html=True)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Session-state bootstrap
-# ══════════════════════════════════════════════════════════════════════════════
 if "phase" not in st.session_state:
     st.session_state["phase"] = "photo"
 
@@ -429,7 +425,7 @@ if phase == "photo":
         <div style="text-align:center; margin-top:.75rem;
                     font-family:'Share Tech Mono',monospace; font-size:.7rem;
                     color:#3a6a9a; letter-spacing:2px;">
-            POSIZIONA IL VOLTO AL CENTRO • BUONA ILLUMINAZIONE
+            POSIZIONA IL VOLTO AL CENTRO CON BUONA ILLUMINAZIONE
         </div>
         """, unsafe_allow_html=True)
     card_end()
@@ -539,7 +535,7 @@ elif phase == "results":
         st.image(annotated_pil, use_container_width=True)
 
     with bar_col:
-        st.markdown('<div style="font-family:\'Share Tech Mono\',monospace; font-size:.7rem; color:#3a6a9a; letter-spacing:2px; margin-bottom:.75rem;">DISTRIBUZIONE ETNICHE</div>', unsafe_allow_html=True)
+        st.markdown('<div style="font-family:\'Share Tech Mono\',monospace; font-size:.7rem; color:#3a6a9a; letter-spacing:2px; margin-bottom:.75rem;">ETNIA STIMATA</div>', unsafe_allow_html=True)
         for r in results:
             label   = r["label"].replace("_"," ").title()
             score   = r["score"] * 100
@@ -564,7 +560,7 @@ elif phase == "results":
     card_end()
 
     # ── World map ──────────────────────────────────────────────────────────────
-    card("DISTRIBUZIONE GEOGRAFICA ETNIA")
+    # card("DISTRIBUZIONE GEOGRAFICA ETNIA")
     fig = go.Figure()
     for r in results:
         matched = match_label(r["label"])
